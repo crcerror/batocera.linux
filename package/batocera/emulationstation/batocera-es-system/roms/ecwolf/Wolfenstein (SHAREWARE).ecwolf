@@ -1,0 +1,4 @@
+Some additional settings
+EXT=WL1
+DATADIR=/userdata/roms/ecwolf/wolf3d14
+PK3=/userdata/roms/ecwolf/addons/wolf3d14_highres.pk3
