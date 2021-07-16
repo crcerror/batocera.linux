@@ -35,7 +35,7 @@ powerdevices=(
               ATX_RASPI_R2_6 "ATXRaspi is a smart power controller SBC" \
               PIN56ONOFF "py: Sliding switch for proper shutdown" \
               PIN56PUSH "py: Momentary push button for shutdown" \
-              PIN356ONOFFRESET "py: Power button and reset button" \
+              PIN356ONOFFRESET "py: Power button and reset button"
              )
 
 #dialog for selecting your switch or power device
