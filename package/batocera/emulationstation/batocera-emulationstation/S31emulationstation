@@ -19,18 +19,9 @@ case "$1" in
 		killall labwc            2>/dev/null # for labwc (wayland)
 		killall touchegg         2>/dev/null
 
-		# Kill emulationstation and then wait at least 20 seconds for it to exit.
-		# The watchdog 'if' block must follow immediately, as it tests the exit code of the killall.
+		# Kill emulationstation and then wait at least 20 seconds for it to exit, send SIGTERM after 25s seconds in total
 		killall emulationstation 2>/dev/null
-		if [ $? -eq 0 ]; then
-			sleep 20 &
-			watchdog=$!
-			while ! [ -z $(pidof emulationstation) ]; do
-				sleep 0.25
-				$(kill -0 $watchdog) || exit
-			done
-			kill -9 $watchdog
-		fi
+        timeout -k 5 20 tail -q --pid=$(pidof emulationstation) -f /dev/null 2>/dev/null
 		;;
 
 	restart|reload)
