@@ -25,8 +25,9 @@ if [[ -z "$1" ]]; then
 fi
 
 # Ensure DISPLAY is set
-if test -z "${DISPLAY}"; then
-    export DISPLAY=:0.0
+if test -z "${DISPLAY}"
+then
+    export DISPLAY=$(getLocalXDisplay || echo 0:0)
 fi
 
 # Define variables
