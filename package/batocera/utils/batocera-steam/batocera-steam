@@ -1,70 +1,156 @@
 #!/bin/bash
 
+#
+# This file is part of the batocera distribution (https://batocera.org).
+# Copyright (c) 2026+.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+# YOU MUST KEEP THIS HEADER AS IT IS
+#
+
+########################################
+#              I N I I T               #
+########################################
+
 log="/userdata/system/logs/steam.log"
+steam_file="/userdata/roms/steam/Steam.steam"
+steam_png="/userdata/roms/flatpak/images/Valve Corporation.png"
 
-GAME=$1
+blacklisted_apps=("Runtime" "Proton" "SDK" "Dedicated" "Workshop" "Big Picture"
+                  "Source" "Linux Runtime" "Redistributables" "Desktop Mode")
 
-batocera-mouse show
+# Steam may put .desktop files in different locations depending on Flatpak/Steam version:
+# - newer: $HOME/Desktop (via XDG Desktop portal)
+# - older: $HOME/.var/app/com.valvesoftware.Steam/.local/share/applications
+steam_search_dirs=("/userdata/saves/flatpak/data/Desktop" "/userdata/saves/flatpak/data/.var/app/com.valvesoftware.Steam/.local/share/applications")
 
-# bad hack in a first time to get audio for user batocera                                                                                                                                          
-chown -R root:audio /var/run/pulse
-chmod -R g+rwX /var/run/pulse
+########################################
+#              FUNCTIONS               #
+########################################
 
-# remove steam root restriction
-file_path=$(find /userdata/saves/flatpak/binaries -name "bin_steam.sh" 2>/dev/null)
-if [ -n "$file_path" ]; then
-    echo "File bin_steam.sh found at: $file_path" > $log
-    # Check if the line "# Don't allow running as root" exists in the file
-    if grep -q "# Don't allow running as root" "$file_path"; then
-        # Create a temporary file
-        temp_file=$(mktemp)
-        # Search for the line "# Don't allow running as root" and remove it along with the next four lines
-        awk "/# Don't allow running as root/{n=5} !/# Don't allow running as root/{if(n>0){n--}else{print}}" "$file_path" > "$temp_file"
-        # Replace the original file with the modified version
-        mv "$temp_file" "$file_path"
-        # Ensure it's executable
-        chmod +x $file_path
-        echo "File modified successfully." >> $log
+# Write Header
+es_add_game_begin() {
+  echo "<gameList>" > /tmp/batocera-steam-update.tmp || return 1
+}
+
+# Write Footer
+es_add_game_end() {
+  ES_SERVER="http://127.0.0.1:1234"
+
+  echo "</gameList>" >> /tmp/batocera-steam-update.tmp || return 1
+  curl -s -X POST -H "Content-type: application/x-www-form-urlencoded" -H "Accept: text/plain" "${ES_SERVER}/addgames/steam" -d "@/tmp/batocera-steam-update.tmp" > /dev/null || return 1
+  return 0
+}
+
+# Add Game (Working Part)
+es_add_game() {
+  # GAME_BASENAME=$1, GAME_NAME=$2, GAME_IMAGE=$3
+  touch /tmp/batocera-steam-update.tmp || return 1
+  cat >> /tmp/batocera-steam-update.tmp <<-_EOF_
+		<game>
+		  <path>./${1}</path>
+		  <name>${2}</name>
+		  <desc></desc>
+		  <rating></rating>
+		  <releasedate></releasedate>
+		  <developer></developer>
+		  <publisher></publisher>
+		  <genre></genre>
+		  <players></players>
+		  <image>${3}</image>
+		  <manual></manual>
+		  <video></video>
+		</game>
+	_EOF_
+}
+
+# Create Steam application
+create_steam_app() {
+  mkdir -p /userdata/roms/steam || return 1
+  if [ ! -f "$steam_file" ]; then
+    echo "com.valvesoftware.Steam" > "$steam_file"
+    echo "Steam.steam file created successfully." >> $log
+    mkdir -p /userdata/roms/steam/images || return 1
+    # take flatpak logo
+    if [ -f "$steam_png" ]; then
+      cp "$steam_png" /userdata/roms/steam/images/Steam.png
+      echo "Steam logo copied successfully." >> $log
     else
-        echo "Root check already removed in the file." >> $log
+      echo "Steam logo not found, could not copy." >> $log
     fi
-else
-    echo "File bin_steam.sh not found." >> $log
-fi
+    es_add_game "Steam.steam" "Steam" "./images/Steam.png"
+    echo "Steam app added to game list." >> $log
+  fi
+  return 0
+}
 
-# check the flatpak save owner
-target_dir="/userdata/saves/flatpak/data"
+es_add_game_worker(){
+  N=0
+  for STEAMAPP in "$@"; do
+    if grep -qE '^[ ]*Categories[ ]*=.*Game.*$' "${STEAMAPP}"; then  # Check if it's a game
+      BASEAPP=$(basename "${STEAMAPP}" | sed -e 's/\.desktop$//')
 
-# Get the current owner and group of the target directory
-current_owner=$(stat -c "%U" "$target_dir")
-current_group=$(stat -c "%G" "$target_dir")
+      # blacklist some apps
+      for blacklistword in "${blacklisted_apps[@]}"; do
+        if [[ "${BASEAPP}" == *"${blacklistword}"* ]]; then
+          echo "Skipping blacklisted entry: ${BASEAPP}" >> $log
+          continue 2
+        fi
+      done
 
-# Check if the owner is not root:root
-if [ "$current_owner:$current_group" != "root:root" ]; then
-    # Change the owner and group to root:root
-    chown -R root:root "$target_dir"
-fi
+      if ! test -e "/userdata/roms/steam/${BASEAPP}.steam"; then
+        echo "Adding ${BASEAPP}"
+        GAMEID=$(grep -E '^Exec=' "${STEAMAPP}" | sed -e 's/Exec=//' -e 's/[ ]*steam[ ]*//' | head -1)
 
-if test -z "${GAME}"
-then
-    DISPLAY=$(getLocalXDisplay) flatpak run com.valvesoftware.Steam -bigpicture
-else
-    # Steam has no option to exit when quitting a game. We previously used to monitor the
-    # console output of the steam command, but that is no longer reliable:
-    # https://github.com/ValveSoftware/steam-for-linux/issues/11793
-    #
-    # We thus monitor the log and when the game process exits, we request steam to stop.
-    # This should allow our steam command to actually finish.
-    log_file="$target_dir/.var/app/com.valvesoftware.Steam/.local/share/Steam/logs/console_log.txt"
-    (
-        grep -q -E '^\[.*\] (Exiting app|Game process removed)' <(tail -f -n 0 "$log_file")
-        DISPLAY=$(getLocalXDisplay) flatpak run com.valvesoftware.Steam -shutdown
-    ) &
-    log_watcher_pid=$!
+        # Add image
+        ICON=$(grep -E "^Icon=" "${STEAMAPP}" | sed -e 's/^Icon=steam_icon_//')_logo.png
+        IMGFILE="/userdata/saves/flatpak/data/.var/app/com.valvesoftware.Steam/.local/share/Steam/appcache/librarycache/${ICON}"
+        IMGARG=
+        if test -e "${IMGFILE}"; then
+          IMGARG="./images/${BASEAPP}.png"
+          mkdir -p "/userdata/roms/steam/images" || return 1
+          cp "${IMGFILE}" "/userdata/roms/steam/${IMGARG}" || return 1
+        fi
 
-    DISPLAY=$(getLocalXDisplay) flatpak run com.valvesoftware.Steam -silent ${GAME}
-    # Kill our background log watching subshell if it's still there.
-    kill "$log_watcher_pid"
-fi
+        # Add game
+        echo "${GAMEID}" > "/userdata/roms/steam/${BASEAPP}.steam" || return 1
 
-batocera-mouse hide
+        # Add game in EmulationStation
+        if ! es_add_game "${BASEAPP}.steam" "${BASEAPP}" "${IMGARG}"; then
+          echo "Adding game in EmulationStation failed" >&2
+          return 1
+        fi
+      fi
+      let N++
+    fi
+  done
+  echo "${#@} desktop entries found." >> $log
+  echo "${N} games added to the list." >> $log
+  return 0
+}
+
+
+########################################
+#                 MAIN                 #
+########################################
+
+# Create Steam Main application
+create_steam_app || exit 1
+
+# Start the game list
+es_add_game_begin || exit 1
+
+# Create Single entry for each desktop file
+readarray -t desktop_files < <(find "${steam_search_dirs[@]}" -name *.desktop 2>/dev/null)
+es_add_game_worker "${desktop_files[@]}" || exit 1
+
+# End the game list
+es_add_game_end || exit 1
+echo "All done, check logs: ${log}"
+exit 0
